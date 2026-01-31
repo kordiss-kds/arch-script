@@ -9,7 +9,7 @@ set -euo pipefail
 DEVICE="/dev/nvme0n1"        # <- проверьте и замените при необходимости
 EFI_SIZE="2GiB"              # размер EFI раздела
 LABEL_BTRFS="arch_btrfs"
-# Опции монтирования, как вы просили:
+# Опции монтирования:
 MOUNT_OPTS="defaults,noatime,compress=zstd:3,space_cache=v2"
 # --------------------
 
@@ -57,6 +57,8 @@ mkfs.fat -F32 -n EFI "$EFI_PART"
 mkfs.btrfs -f -L "$LABEL_BTRFS" "$BTRFS_PART"
 
 echo "3) Монтирую Btrfs временно и создаю subvolumes..."
+# не удаляем /mnt, если она используется; удаление старого /mnt оставлено по логике установки,
+# но будьте внимательны: если вы работаете не в live-окружении, это может быть опасно.
 rm -rf /mnt 2>/dev/null || true
 mkdir -p /mnt
 mount "$BTRFS_PART" /mnt
@@ -70,7 +72,7 @@ btrfs subvolume create /mnt/@tmp
 btrfs subvolume create /mnt/@log
 
 echo "4) Отмонтирую и смонтирую subvolume=@ как корень (/mnt) с опциями..."
-umount /mnt
+umount /mnt || true
 
 mkdir -p /mnt
 mount -o "subvol=@,${MOUNT_OPTS}" "$BTRFS_PART" /mnt
@@ -91,6 +93,28 @@ echo "5) Монтирую EFI"
 mkdir -p /mnt/boot
 mount "$EFI_PART" /mnt/boot
 
+# ---- НОВЫЙ БЛОК: проверки перед genfstab ----
+echo "Проверяю, что /mnt смонтирован и готов для genfstab..."
+if ! mountpoint -q /mnt; then
+  echo "ОШИБКА: /mnt не смонтирован. Проверьте шаги монтирования."
+  exit 1
+fi
+
+# создаём /mnt/etc если ещё не существует (перенаправление не создаёт родительские каталоги)
+mkdir -p /mnt/etc
+
+# проверяем genfstab и при возможности устанавливаем пакет arch-install-scripts через pacman
+if ! command -v genfstab >/dev/null 2>&1; then
+  echo "genfstab (arch-install-scripts) не найден."
+  if command -v pacman >/dev/null 2>&1; then
+    echo "Пытаюсь установить arch-install-scripts через pacman..."
+    pacman -Sy --noconfirm arch-install-scripts || { echo "Не удалось установить arch-install-scripts"; exit 1; }
+  else
+    echo "pacman недоступен — установите arch-install-scripts вручную в live-окружении и повторите."
+    exit 1
+  fi
+fi
+
 echo "6) Генерирую /etc/fstab (genfstab) — сохраню в /mnt/etc/fstab"
 genfstab -U /mnt > /mnt/etc/fstab
 
@@ -104,5 +128,6 @@ cat <<'EOF'
     - arch-chroot и базовую настройку загрузчика (systemd-boot/GRUB)
   Скажите, нужно ли добавить эти шаги.
 EOF
+
 echo
 echo "Скрипт завершён успешно."
